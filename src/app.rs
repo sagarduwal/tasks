@@ -20,7 +20,7 @@ use cosmic::{
     cosmic_theme::{self, ThemeMode},
     iced::{
         keyboard::{Event as KeyEvent, Modifiers},
-        Event, Subscription,
+        Event, Subscription, Length,
     },
     widget::{
         self,
@@ -30,6 +30,7 @@ use cosmic::{
     },
     Application, ApplicationExt, Element,
 };
+use keyring::Entry;
 
 use crate::{
     app::{
@@ -65,6 +66,15 @@ pub struct Tasks {
     modifiers: Modifiers,
     dialog_pages: VecDeque<DialogPage>,
     dialog_text_input: widget::Id,
+    
+    llm_provider_options: Vec<String>,
+    llm_selected_provider: usize,
+    llm_model_options: Vec<String>,
+    llm_selected_model: usize,
+    llm_api_base: String,
+    llm_api_key: String,
+    llm_testing: bool,
+    llm_test_status: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,20 +84,96 @@ pub enum Message {
     Tasks(TasksAction),
     Application(ApplicationAction),
     Open(String),
+    Preferences(PreferencesMessage),
+}
+
+#[derive(Debug, Clone)]
+pub enum PreferencesMessage {
+    SetProvider(usize),
+    SetModelIdx(usize),
+    SetApiBase(String),
+    SetApiKey(String),
+    Save,
+    Test,
 }
 
 impl Tasks {
     fn settings(&self) -> Element<Message> {
-        widget::scrollable(widget::settings::section().title(fl!("appearance")).add(
-            widget::settings::item::item(
+        let appearance = widget::settings::section()
+            .title(fl!("appearance"))
+            .add(widget::settings::item::item(
                 fl!("theme"),
                 widget::dropdown(
                     &self.app_themes,
                     Some(self.config.app_theme.into()),
                     |theme| Message::Application(ApplicationAction::AppTheme(theme)),
                 ),
-            ),
-        ))
+            ));
+
+        let ai_section = widget::settings::section()
+            .title(String::from("AI"))
+            .add(widget::settings::item::item(
+                String::from("Provider"),
+                widget::dropdown(
+                    &self.llm_provider_options,
+                    Some(self.llm_selected_provider),
+                    |idx| Message::Preferences(PreferencesMessage::SetProvider(idx)),
+                ),
+            ))
+            .add(widget::settings::item::item(
+                String::from("Model"),
+                widget::dropdown(
+                    &self.llm_model_options,
+                    Some(self.llm_selected_model),
+                    |idx| Message::Preferences(PreferencesMessage::SetModelIdx(idx)),
+                ),
+            ))
+            .add(widget::settings::item::item(
+                String::from("API Base URL"),
+                widget::text_input(String::from("https://api.openai.com"), &self.llm_api_base)
+                    .on_input(|s| Message::Preferences(PreferencesMessage::SetApiBase(s)))
+                    .width(Length::Fixed(420.0)),
+            ))
+            .add(widget::settings::item::item(
+                String::from("API Key"),
+                widget::text_input(String::from("••••••••"), &self.llm_api_key)
+                    .on_input(|s| Message::Preferences(PreferencesMessage::SetApiKey(s))),
+            ))
+            .add(
+                widget::row()
+                    .push(
+                        widget::button::standard(String::from("Test Connection"))
+                            .on_press_maybe(if self.llm_testing {
+                                None
+                            } else {
+                                Some(Message::Preferences(PreferencesMessage::Test))
+                            }),
+                    )
+                    .push(
+                        widget::button::standard(String::from("Save"))
+                            .on_press(Message::Preferences(PreferencesMessage::Save)),
+                    )
+                    .spacing(8),
+            )
+            .add(
+                widget::text::body(
+                    if self.llm_testing {
+                        String::from("Testing…")
+                    } else {
+                        self.llm_test_status
+                            .as_ref()
+                            .cloned()
+                            .unwrap_or_else(|| String::from(""))
+                    },
+                ),
+            );
+
+        widget::scrollable(
+            widget::column()
+                .push(appearance)
+                .push(ai_section)
+                .spacing(16),
+        )
         .into()
     }
 
@@ -508,12 +594,66 @@ impl Application for Tasks {
             modifiers: Modifiers::empty(),
             dialog_pages: VecDeque::new(),
             dialog_text_input: widget::Id::unique(),
+            llm_provider_options: vec!["OpenAI".into()],
+            llm_selected_provider: 0,
+            llm_model_options: vec![
+                "gpt-4o-mini".into(),
+                "gpt-4o".into(),
+                "gpt-4.1".into(),
+                "gpt-5-mini".into(),
+                "gpt-5".into(),
+                "o4-mini".into(),
+                "o3-mini-high".into(),
+            ],
+            llm_selected_model: 0,
+            llm_api_base: String::from("https://api.openai.com"),
+            llm_api_key: String::new(),
+            llm_testing: false,
+            llm_test_status: None,
         };
 
         let mut tasks = vec![app.update(Message::Tasks(TasksAction::FetchLists))];
 
         if let Some(id) = app.core.main_window_id() {
             tasks.push(app.set_window_title(fl!("tasks"), id));
+        }
+
+        {
+            let provider = if app.config.llm_provider.is_empty() {
+                "OpenAI"
+            } else {
+                &app.config.llm_provider
+            };
+            if let Some(idx) = app
+                .llm_provider_options
+                .iter()
+                .position(|p| p == provider)
+            {
+                app.llm_selected_provider = idx;
+            }
+
+            let model = if app.config.llm_model.is_empty() {
+                "gpt-4o-mini"
+            } else {
+                &app.config.llm_model
+            };
+            if let Some(idx) = app.llm_model_options.iter().position(|m| m == model) {
+                app.llm_selected_model = idx;
+            }
+
+            if !app.config.llm_api_base.is_empty() {
+                app.llm_api_base = app.config.llm_api_base.clone();
+            }
+        }
+
+        {
+            if let Ok(entry) = Entry::new(Self::APP_ID, "openai") {
+                if let Ok(secret) = entry.get_password() {
+                    app.llm_api_key = secret;
+                } else if let Ok(env_key) = std::env::var("OPENAI_API_KEY") {
+                    app.llm_api_key = env_key;
+                }
+            }
         }
 
         app.core.nav_bar_toggle_condensed();
@@ -688,6 +828,112 @@ impl Application for Tasks {
             }
             Message::Application(application_action) => {
                 self.update_app(&mut tasks, application_action);
+            }
+            Message::Preferences(pref_msg) => {
+                match pref_msg {
+                    PreferencesMessage::SetProvider(idx) => {
+                        self.llm_selected_provider = idx;
+                    }
+                    PreferencesMessage::SetModelIdx(idx) => {
+                        self.llm_selected_model = idx;
+                    }
+                    PreferencesMessage::SetApiBase(s) => {
+                        self.llm_api_base = s;
+                    }
+                    PreferencesMessage::SetApiKey(s) => {
+                        self.llm_api_key = s;
+                    }
+                    PreferencesMessage::Save => {
+                        if let Some(handler) = &self.config_handler {
+                            let provider = self
+                                .llm_provider_options
+                                .get(self.llm_selected_provider)
+                                .cloned()
+                                .unwrap_or_else(|| String::from("OpenAI"));
+                            let model = self
+                                .llm_model_options
+                                .get(self.llm_selected_model)
+                                .cloned()
+                                .unwrap_or_else(|| String::from("gpt-4o-mini"));
+
+                            if let Err(err) = self.config.set_llm_provider(handler, provider) {
+                                tracing::error!("save llm_provider: {err}");
+                            }
+                            if let Err(err) = self.config.set_llm_model(handler, model) {
+                                tracing::error!("save llm_model: {err}");
+                            }
+                            if let Err(err) =
+                                self.config.set_llm_api_base(handler, self.llm_api_base.clone())
+                            {
+                                tracing::error!("save llm_api_base: {err}");
+                            }
+                        }
+
+                        match Entry::new(Self::APP_ID, "openai") {
+                            Ok(entry) => {
+                                let key = self.llm_api_key.trim();
+                                if key.is_empty() {
+                                    // Fallback: set an empty password to effectively clear the key.
+                                    if let Err(err) = entry.set_password("") {
+                                        tracing::warn!("keyring clear failed: {err}");
+                                    }
+                                } else if let Err(err) = entry.set_password(key) {
+                                    tracing::error!("keyring save failed: {err}");
+                                }
+                            }
+                            Err(err) => tracing::error!("keyring init failed: {err}"),
+                        }
+
+                        self.llm_test_status = Some(String::from("Saved."));
+                    }
+                    PreferencesMessage::Test => {
+                        self.llm_testing = true;
+                        self.llm_test_status = None;
+                        let base = self.llm_api_base.trim_end_matches('/').to_string();
+                        let key_present = !self.llm_api_key.trim().is_empty();
+                        if !key_present {
+                            self.llm_testing = false;
+                            self.llm_test_status = Some(String::from("Provide an API key to test."));
+                        } else {
+                            let url = format!("{}/v1/models", base);
+                            let result = (|| {
+                                let client = match reqwest::blocking::Client::builder()
+                                    .timeout(std::time::Duration::from_secs(5))
+                                    .build()
+                                {
+                                    Ok(c) => c,
+                                    Err(e) => return Err(format!("client error: {}", e)),
+                                };
+                                let resp = match client
+                                    .get(&url)
+                                    .bearer_auth(self.llm_api_key.trim())
+                                    .send()
+                                {
+                                    Ok(r) => r,
+                                    Err(e) => return Err(format!("request error: {}", e)),
+                                };
+                                let status = resp.status();
+                                let text = resp.text().unwrap_or_default();
+                                if status.is_success() {
+                                    Ok(String::from("Success: API reachable"))
+                                } else {
+                                    let snippet = &text.chars().take(160).collect::<String>();
+                                    Err(format!("HTTP {}: {}", status.as_u16(), snippet))
+                                }
+                            })();
+
+                            match result {
+                                Ok(msg) => {
+                                    self.llm_test_status = Some(msg);
+                                }
+                                Err(err) => {
+                                    self.llm_test_status = Some(format!("Failed: {}", err));
+                                }
+                            }
+                            self.llm_testing = false;
+                        }
+                    }
+                }
             }
         }
 

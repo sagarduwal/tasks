@@ -12,6 +12,9 @@ pub const CONFIG_VERSION: u64 = 1;
 pub struct TasksConfig {
     pub app_theme: AppTheme,
     pub hide_completed: bool,
+    pub llm_provider: String,
+    pub llm_model: String,
+    pub llm_api_base: String,
 }
 
 impl TasksConfig {
