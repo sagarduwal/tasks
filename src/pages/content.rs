@@ -34,6 +34,8 @@ pub struct Content {
     search_bar_visible: bool,
     search_query: String,
     sort_type: SortType,
+    ai_textbox_visible: bool,
+    ai_input: String,
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -79,6 +81,11 @@ pub enum Message {
     ToggleSearchBar,
     SearchQueryChanged(String),
     SetSort(SortType),
+    
+    // AI Tasks
+    ShowAITextbox,
+    HideAITextbox,
+    AIInputChanged(String),
 }
 
 pub enum Output {
@@ -142,6 +149,8 @@ impl Content {
             search_bar_visible: false,
             search_query: String::new(),
             sort_type: SortType::DateAsc,
+            ai_textbox_visible: false,
+            ai_input: String::new(),
         }
     }
 
@@ -473,25 +482,91 @@ impl Content {
             .into()
     }
 
+    pub fn ai_textbox_view(&self) -> Element<Message> {
+        let spacing = theme::active().cosmic().spacing;
+        
+        widget::column()
+            .push(
+                widget::row()
+                    .push(widget::text("🤖 AI Task Generator").size(16))
+                    .push(widget::horizontal_space())
+                    .push(
+                        widget::button::icon(icons::get_handle("window-close-symbolic", 16))
+                            .padding(spacing.space_xxs)
+                            .on_press(Message::HideAITextbox)
+                    )
+                    .align_y(Alignment::Center)
+                    .spacing(spacing.space_xs)
+            )
+            .push(
+                widget::row()
+                    .push(
+                        widget::text_input("Describe the tasks you want to create...", &self.ai_input)
+                            .id(widget::Id::new("ai-task-input"))
+                            .on_input(Message::AIInputChanged)
+                            .width(Length::Fill)
+                    )
+                    .push(
+                        widget::button::icon(icons::get_handle("mail-send-symbolic", 18))
+                            .padding(spacing.space_xxs)
+                            .class(cosmic::style::Button::Suggested)
+                            .on_press_maybe(if self.ai_input.trim().is_empty() {
+                                None
+                            } else {
+                                Some(Message::HideAITextbox) // Placeholder for now
+                            })
+                    )
+                    .spacing(spacing.space_xxs)
+                    .align_y(Alignment::Center)
+            )
+            .spacing(spacing.space_xs)
+            .padding(spacing.space_s)
+            .apply(widget::container)
+            .class(cosmic::style::Container::ContextDrawer)
+            .into()
+    }
+
     pub fn new_task_view(&self) -> Element<Message> {
         let spacing = theme::active().cosmic().spacing;
-        row(vec![
-            widget::text_input(fl!("add-new-task"), &self.input)
-                .id(widget::Id::new("new-task-input"))
-                .on_input(Message::TaskTitleInput)
-                .on_submit(|_| Message::TaskAdd)
+        
+        let mut column = widget::column().spacing(spacing.space_xs);
+        
+        // AI Tasks button
+        column = column.push(
+            widget::button::text("🤖 AI Tasks")
                 .width(Length::Fill)
-                .into(),
-            widget::button::icon(icons::get_handle("mail-send-symbolic", 18))
+                .on_press(Message::ShowAITextbox)
+                .class(cosmic::style::Button::Standard)
+        );
+        
+        // AI textbox overlay (if visible)
+        if self.ai_textbox_visible {
+            column = column.push(self.ai_textbox_view());
+        } else {
+            // Regular task input (only show when AI textbox is not visible)
+            column = column.push(
+                row(vec![
+                    widget::text_input(fl!("add-new-task"), &self.input)
+                        .id(widget::Id::new("new-task-input"))
+                        .on_input(Message::TaskTitleInput)
+                        .on_submit(|_| Message::TaskAdd)
+                        .width(Length::Fill)
+                        .into(),
+                    widget::button::icon(icons::get_handle("mail-send-symbolic", 18))
+                        .padding(spacing.space_xxs)
+                        .class(cosmic::style::Button::Suggested)
+                        .on_press(Message::TaskAdd)
+                        .into(),
+                ])
                 .padding(spacing.space_xxs)
-                .class(cosmic::style::Button::Suggested)
-                .on_press(Message::TaskAdd)
-                .into(),
-        ])
-        .padding(spacing.space_xxs)
-        .spacing(spacing.space_xxs)
-        .align_y(Alignment::Center)
-        .into()
+                .spacing(spacing.space_xxs)
+                .align_y(Alignment::Center)
+            );
+        }
+        
+        column
+            .padding(spacing.space_xxs)
+            .into()
     }
 
     fn populate_task_slotmap(&mut self, tasks: Vec<models::Task>) {
@@ -783,6 +858,16 @@ impl Content {
             }
             Message::SetSort(sort_type) => {
                 self.sort_type = sort_type;
+            }
+            Message::ShowAITextbox => {
+                self.ai_textbox_visible = true;
+            }
+            Message::HideAITextbox => {
+                self.ai_textbox_visible = false;
+                self.ai_input.clear();
+            }
+            Message::AIInputChanged(input) => {
+                self.ai_input = input;
             }
         }
         tasks
